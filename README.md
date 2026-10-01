@@ -33,5 +33,5 @@ curl -LO cdn.jsdelivr.net/gh/angr6908/script-chise/chise.sh && sh chise.sh --ssh
 
 ## Docker Installation Script (Btrfs Driver)
 ```bash
-mkdir -p /etc/docker && echo '{"storage-driver": "btrfs"}' > /etc/docker/daemon.json && install -m 0755 -d /etc/apt/keyrings && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc && chmod a+r /etc/apt/keyrings/docker.asc && echo -e "Types: deb\nURIs: https://download.docker.com/linux/debian\nSuites: $(. /etc/os-release && echo "$VERSION_CODENAME")\nComponents: stable\nSigned-By: /etc/apt/keyrings/docker.asc" | tee /etc/apt/sources.list.d/docker.sources && apt update && apt install docker-ce docker-ce-cli containerd.io docker-compose-plugin -y
+mkdir -p /etc/docker && echo '{"storage-driver": "btrfs"}' > /etc/docker/daemon.json && install -m 0755 -d /etc/apt/keyrings && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc && chmod a+r /etc/apt/keyrings/docker.asc && echo -e "Types: deb\nURIs: https://download.docker.com/linux/debian\nSuites: $(. /etc/os-release && echo "$VERSION_CODENAME")\nComponents: stable\nSigned-By: /etc/apt/keyrings/docker.asc" | tee /etc/apt/sources.list.d/docker.sources && apt update && apt install --no-install-recommends docker-ce docker-ce-cli containerd.io docker-compose-plugin -y
 ```
