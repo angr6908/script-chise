@@ -44,6 +44,16 @@ if awk '$5 != "/" && $5 !~ /^\/(dev|proc|sys|run)(\/|$)/ { found=1; print "Extra
     exit 1
 fi
 
+printf 'DNS: 1) Quad9  2) Google [1/2]: '
+read -r DNS_MODE < /dev/tty
+if [ "$DNS_MODE" = 2 ]; then
+    DNS4=8.8.8.8
+    DNS6=2001:4860:4860::8888
+else
+    DNS4=9.9.9.9
+    DNS6=2620:fe::fe
+fi
+
 printf 'This will ERASE the current container filesystem. Type ERASE to continue: '
 read -r ANSWER < /dev/tty
 [ "$ANSWER" = ERASE ] || exit 1
@@ -89,7 +99,7 @@ rm "$ARCHIVE"
 
 printf '%s\n' "$(hostname)" > "$STAGE/etc/hostname"
 rm -f "$STAGE/etc/resolv.conf"
-printf 'nameserver 9.9.9.9\nnameserver 2620:fe::fe\n' > "$STAGE/etc/resolv.conf"
+printf 'nameserver %s\nnameserver %s\n' "$DNS4" "$DNS6" > "$STAGE/etc/resolv.conf"
 
 mkdir -p "$STAGE/root/.ssh" "$STAGE/run/sshd" "$STAGE/etc/ssh"
 printf '%s\n' "$SSH_KEY" > "$STAGE/root/.ssh/authorized_keys"

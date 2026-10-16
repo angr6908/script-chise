@@ -6,6 +6,7 @@ Debian 13 (Trixie) minimal install script (~165 MB after install).
 
 - Root filesystem selectable: Btrfs (zstd compression, async discard) or ext4 (weekly fstrim)  
 - IPv4/IPv6 support via systemd-networkd (selectable: DHCP or static)  
+- DNS selectable: Quad9 or Google  
 - Works on UEFI (GPT) and BIOS (MBR) systems  
 - Enables BBR + FQ, zRAM, and NTP time sync by default  
 - SSH key–only access  

@@ -33,6 +33,16 @@ printf "Network: 1) DHCP  2) Static [1/2]: "
 read -r NET_MODE
 [ "$NET_MODE" = "2" ] && USE_STATIC=1 || USE_STATIC=0
 
+printf "DNS: 1) Quad9  2) Google [1/2]: "
+read -r DNS_MODE
+if [ "$DNS_MODE" = "2" ]; then
+    DNS4=8.8.8.8
+    DNS6=2001:4860:4860::8888
+else
+    DNS4=9.9.9.9
+    DNS6=2620:fe::fe
+fi
+
 prepare_host() {
     [ "$FSTYPE" = btrfs ] && modprobe btrfs 2>/dev/null || true
     . /etc/os-release 2>/dev/null || true
@@ -181,7 +191,7 @@ configure_system() {
             "$ROOT_SPEC" "$FSTYPE" "$MOUNT_OPTS" "$FSCK_PASS" > /mnt/etc/fstab
     fi
 
-    printf "nameserver 9.9.9.9\nnameserver 2620:fe::fe\n" > /mnt/etc/resolv.conf
+    printf "nameserver %s\nnameserver %s\n" "$DNS4" "$DNS6" > /mnt/etc/resolv.conf
     echo "localhost" > /mnt/etc/hostname
     printf "127.0.0.1\tlocalhost\n::1\t\tlocalhost ip6-localhost ip6-loopback\n" > /mnt/etc/hosts
     printf "LANG=C\nLC_ALL=C\n" | tee /mnt/etc/default/locale > /mnt/etc/environment
