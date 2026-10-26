@@ -254,7 +254,24 @@ configure_time() {
     chroot /mnt systemctl enable systemd-timesyncd
 }
 
+cpu_count() {
+    [ -r "$1" ] || { echo 0; return; }
+    awk -F, '{ for (i = 1; i <= NF; i++) { n = split($i, r, "-"); c += (n == 2) ? r[2] - r[1] + 1 : 1 } } END { print c + 0 }' "$1"
+}
+
+limit_possible_cpus() {
+    PRESENT=$(cpu_count /sys/devices/system/cpu/present)
+    POSSIBLE=$(cpu_count /sys/devices/system/cpu/possible)
+    if [ "$PRESENT" -ge 1 ] && [ "$POSSIBLE" -gt "$PRESENT" ]; then
+        mkdir -p /mnt/etc/default/grub.d
+        printf 'GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT nr_cpus=%s"\n' "$PRESENT" \
+            > /mnt/etc/default/grub.d/90-nr-cpus.cfg
+        echo "nr_cpus=$PRESENT: $POSSIBLE possible CPUs, $PRESENT present"
+    fi
+}
+
 configure_bootloader() {
+    limit_possible_cpus
     cat > /mnt/etc/default/grub << 'EOF'
 GRUB_DEFAULT=0
 GRUB_TIMEOUT=5
