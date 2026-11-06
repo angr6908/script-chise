@@ -43,6 +43,28 @@ else
     DNS6=2620:fe::fe
 fi
 
+printf "Swap: 1) zram  2) zswap (+95 MB) [1/2]: "
+read -r SWAP_MODE
+if [ "$SWAP_MODE" = "2" ]; then
+    # The cloud kernel is built without zswap, so use the standard one.
+    SWAP=zswap
+    KERNEL_PKG=linux-image-amd64
+    SWAP_PKGS=
+    printf "Swap file size in MB [1024]: "
+    read -r SWAP_MB
+    case "${SWAP_MB:=1024}" in
+        *[!0-9]*) echo "Invalid size: $SWAP_MB" >&2; exit 1 ;;
+    esac
+    # Strip leading zeros, or shell arithmetic reads e.g. 08 as octal and fails.
+    SWAP_MB=${SWAP_MB#"${SWAP_MB%%[!0]*}"}
+    [ -n "$SWAP_MB" ] || { echo "Invalid size: 0" >&2; exit 1; }
+    SWAPFILE_SIZE="${SWAP_MB}M"
+else
+    SWAP=zram
+    KERNEL_PKG=linux-image-cloud-amd64
+    SWAP_PKGS=zram-tools
+fi
+
 prepare_host() {
     [ "$FSTYPE" = btrfs ] && modprobe btrfs 2>/dev/null || true
     . /etc/os-release 2>/dev/null || true
@@ -71,6 +93,17 @@ detect_disk() {
         PART_ROOT="${DISK}2"
     else
         PART_ROOT="${DISK}1"
+    fi
+}
+
+# Stop before the disk is wiped if the swap file can't fit next to the system.
+check_swap_fits() {
+    _sectors=$(cat "/sys/class/block/${DISK##*/}/size" 2>/dev/null || echo 0)
+    _disk_mb=$((_sectors / 2048))
+    if [ "$_disk_mb" -gt 0 ] && [ $((SWAP_MB + 1024)) -gt "$_disk_mb" ]; then
+        echo "Swap file of ${SWAP_MB} MB doesn't fit on $DISK (${_disk_mb} MB; the system needs ~1024 MB)." >&2
+        echo "Nothing was changed. Rerun with a smaller size." >&2
+        exit 1
     fi
 }
 
@@ -162,7 +195,7 @@ install_packages() {
     DEBIAN_FRONTEND=noninteractive chroot /mnt apt-get update -q
     DEBIAN_FRONTEND=noninteractive chroot /mnt apt-get install -y \
         iproute2 ca-certificates $TARGET_FS_PKGS nano curl nftables sudo \
-        linux-image-cloud-amd64 openssh-server cron zram-tools iputils-ping \
+        $KERNEL_PKG openssh-server cron $SWAP_PKGS iputils-ping \
         fuse3 zip unzip rsync 7zip systemd-timesyncd $GRUB_PKGS
 }
 
@@ -295,6 +328,37 @@ configure_zram() {
     sed -i 's/^ALGO=lz4/ALGO=zstd/; s/^PERCENT=50/PERCENT=200/' /mnt/etc/default/zramswap
 }
 
+# zswap compresses pages in RAM and needs a real swap device behind it.
+# Every page it holds reserves a slot there, so the file size caps how much it can hold.
+configure_zswap() {
+    # Backstop: the disk is already set up here, so skip the swap file rather than
+    # fail and leave a system that won't boot.
+    _free_mb=$(df -Pm /mnt | awk 'NR==2{print $4}')
+    if [ $((SWAP_MB + 256)) -gt "${_free_mb:-0}" ]; then
+        echo "Warning: only ${_free_mb} MB free, skipping the ${SWAP_MB} MB swap file and zswap." >&2
+        return 0
+    fi
+    if [ "$FSTYPE" = btrfs ]; then
+        chroot /mnt btrfs filesystem mkswapfile --size "$SWAPFILE_SIZE" /swapfile
+    else
+        fallocate -l "$SWAPFILE_SIZE" /mnt/swapfile
+        chmod 600 /mnt/swapfile
+        chroot /mnt mkswap /swapfile
+    fi
+    printf "/swapfile\tnone\tswap\tsw,pri=10\t0 0\n" >> /mnt/etc/fstab
+
+    mkdir -p /mnt/etc/default/grub.d /mnt/etc/tmpfiles.d
+    printf 'GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT zswap.enabled=1 zswap.zpool=zsmalloc zswap.max_pool_percent=25 zswap.shrinker_enabled=0"\n' \
+        > /mnt/etc/default/grub.d/95-zswap.cfg
+    # zstd is a module, so it isn't ready when zswap starts at boot; switch to it once it is.
+    printf "w /sys/module/zswap/parameters/compressor - - - - zstd\n" \
+        > /mnt/etc/tmpfiles.d/zswap-compressor.conf
+}
+
+configure_swap() {
+    if [ "$SWAP" = zswap ]; then configure_zswap; else configure_zram; fi
+}
+
 cleanup() {
     chroot /mnt passwd -l root
     DEBIAN_FRONTEND=noninteractive chroot /mnt apt-get clean
@@ -307,6 +371,7 @@ cleanup() {
 
 prepare_host
 detect_disk
+[ "$SWAP" = zswap ] && check_swap_fits || true
 [ "$USE_STATIC" = 1 ] && detect_network || true
 partition_and_mount
 bootstrap_debian
@@ -316,7 +381,7 @@ configure_system
 configure_ssh
 configure_network
 configure_time
+configure_swap
 configure_bootloader
-configure_zram
 cleanup
 reboot

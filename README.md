@@ -8,7 +8,8 @@ Debian 13 (Trixie) minimal install script (~165 MB after install).
 - IPv4/IPv6 support via systemd-networkd (selectable: DHCP or static)  
 - DNS selectable: Quad9 or Google  
 - Works on UEFI (GPT) and BIOS (MBR) systems  
-- Enables BBR + FQ, zRAM, and NTP time sync by default  
+- Swap selectable: zRAM (cloud kernel) or zswap with a swap file of your chosen size in MB (standard kernel, about 95 MB more disk)  
+- Enables BBR + FQ and NTP time sync by default  
 - SSH key–only access  
 
 ## Usage
