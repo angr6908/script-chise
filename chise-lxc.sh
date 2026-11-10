@@ -1,7 +1,10 @@
 #!/bin/sh
 set -eu
 PATH=/usr/sbin:/usr/bin:/sbin:/bin:$PATH
-export PATH
+# util-linux 2.39+ binds through the new mount API, which a Proxmox CT refuses for
+# /dev ("bind /dev failed"); the classic mount(2) works. BusyBox ignores this.
+LIBMOUNT_FORCE_MOUNT2=always
+export PATH LIBMOUNT_FORCE_MOUNT2
 
 usage() {
     echo "Usage: $0 debian|alpine --ssh-key 'ssh-ed25519 ...'" >&2
