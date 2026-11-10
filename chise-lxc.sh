@@ -188,12 +188,27 @@ if [ "$PROXMOX" = 1 ]; then
     fi
 fi
 
+# Socket buffers count against the container's memory, but the kernel sized the tcp_rmem
+# maximum from the host's. Apply its rule (1/128 of memory) to the container, within 4-32 MB.
+MEM_KB=$(awk '$1 == "MemTotal:" { print $2; exit }' /proc/meminfo)
+MEM_KB=${MEM_KB:-0}
+CG_MAX=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || true)
+case "$CG_MAX" in
+    ''|*[!0-9]*) ;;
+    *) [ $((CG_MAX / 1024)) -ge "$MEM_KB" ] || MEM_KB=$((CG_MAX / 1024)) ;;
+esac
+RMEM_MAX=$((MEM_KB * 8))
+[ "$RMEM_MAX" -ge 4194304 ] || RMEM_MAX=4194304
+[ "$RMEM_MAX" -le 33554432 ] || RMEM_MAX=33554432
+
 # Per-container TCP settings; BBR only if the host lets containers choose it.
+# notsent_lowat keeps unsent data per socket at 128 KB instead of filling the send buffer.
 mkdir -p "$STAGE/etc/sysctl.d"
 {
     grep -qw bbr /proc/sys/net/ipv4/tcp_allowed_congestion_control 2>/dev/null &&
         echo 'net.ipv4.tcp_congestion_control=bbr'
     printf 'net.ipv4.tcp_fastopen=3\nnet.ipv4.tcp_slow_start_after_idle=0\nnet.ipv4.tcp_mtu_probing=1\n'
+    printf 'net.ipv4.tcp_rmem=4096 131072 %s\nnet.ipv4.tcp_notsent_lowat=131072\n' "$RMEM_MAX"
 } > "$STAGE/etc/sysctl.d/99-chise.conf"
 
 mkdir -p "$STAGE/root/.ssh" "$STAGE/run/sshd" "$STAGE/etc/ssh"
