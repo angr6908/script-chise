@@ -290,7 +290,8 @@ EOF
     done
     mkdir -p "$STAGE/etc/systemd/journald.conf.d"
     printf '[Journal]\nSystemMaxUse=1M\nRuntimeMaxUse=1M\n' > "$STAGE/etc/systemd/journald.conf.d/size.conf"
-    printf 'LANG=C\nLC_ALL=C\n' > "$STAGE/etc/default/locale"
+    # Debian's systemd relinks /etc/default/locale to ../locale.conf at every boot.
+    printf 'LANG=C\n' > "$STAGE/etc/locale.conf"
     printf 'LANG=C\nLC_ALL=C\n' > "$STAGE/etc/environment"
     # Like chise.sh: drop the package cache and lists (about 190 MB); run apt update before installing.
     chroot "$STAGE" apt-get clean
