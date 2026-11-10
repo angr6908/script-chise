@@ -225,6 +225,26 @@ chmod 600 "$STAGE/root/.ssh/authorized_keys"
 mount --bind /dev "$STAGE/dev"
 mount --bind /proc "$STAGE/proc"
 if [ "$DISTRO" = debian ]; then
+    # Like chise.sh: no docs, man pages or translations, and no recommends.
+    mkdir -p "$STAGE/etc/dpkg/dpkg.cfg.d" "$STAGE/etc/apt/apt.conf.d"
+    cat > "$STAGE/etc/dpkg/dpkg.cfg.d/01_nodoc" << 'EOF'
+path-exclude=/usr/share/doc/*
+path-exclude=/usr/share/man/*
+path-exclude=/usr/share/locale/*
+path-exclude=/usr/share/info/*
+path-exclude=/usr/share/groff/*
+path-exclude=/usr/share/lintian/*
+path-include=/usr/share/locale/locale.alias
+EOF
+    cat > "$STAGE/etc/apt/apt.conf.d/99minimal" << 'EOF'
+APT::Install-Recommends "false";
+APT::Install-Suggests "false";
+Acquire::GzipIndexes "true";
+Acquire::CompressionTypes::Order:: "gz";
+Dir::Cache::pkgcache "";
+Dir::Cache::srcpkgcache "";
+Acquire::Languages "none";
+EOF
     # Proxmox writes the CT's addresses only as ifupdown config. ifupdown needs dhclient
     # for DHCPv6; dhcpcd only covers IPv4.
     [ "$PROXMOX" = 1 ] && NET_PKG='ifupdown isc-dhcp-client' || NET_PKG=
@@ -251,6 +271,24 @@ if [ "$DISTRO" = debian ]; then
     fi
     # resolv.conf is a static file now, so the image's systemd-resolved has nothing to do.
     chroot "$STAGE" systemctl disable systemd-resolved 2>/dev/null || true
+    # Image packages a root-only container doesn't use (about 96 MB): vim (nano is
+    # installed), locales (LANG=C below), udev, polkit and what they pull in. Purged only
+    # when apt would remove nothing else, in case a newer image depends on one of them.
+    chroot "$STAGE" /bin/sh -ec '
+        list=$(dpkg-query -W -f="\${db:Status-Abbrev}\${Package}\n" $1 2>/dev/null | awk "/^ii/ { print substr(\$0, 4) }")
+        [ -n "$list" ] || exit 0
+        extra=$(apt-get -s purge $list | awk "/^Purg / { print \$2 }" | grep -vxF "$list" || true)
+        if [ -n "$extra" ]; then echo "Not purging the extra packages; that would also remove:" $extra >&2; exit 0; fi
+        DEBIAN_FRONTEND=noninteractive apt-get purge -y $list
+    ' sh 'vim vim-runtime vim-common xxd locales libc-l10n udev polkitd pkexec libpolkit-agent-1-0 libpolkit-gobject-1-0 libglib2.0-0t64 libglib2.0-data shared-mime-info libduktape207 libatomic1 libsodium23 libxml2 xml-core sgml-base xdg-user-dirs'
+    for dir in doc man info groff lintian; do rm -rf "$STAGE/usr/share/$dir"/*; done
+    for entry in "$STAGE"/usr/share/locale/*; do
+        [ "${entry##*/}" = locale.alias ] || rm -rf -- "$entry"
+    done
+    mkdir -p "$STAGE/etc/systemd/journald.conf.d"
+    printf '[Journal]\nSystemMaxUse=1M\nRuntimeMaxUse=1M\n' > "$STAGE/etc/systemd/journald.conf.d/size.conf"
+    printf 'LANG=C\nLC_ALL=C\n' > "$STAGE/etc/default/locale"
+    printf 'LANG=C\nLC_ALL=C\n' > "$STAGE/etc/environment"
     # Like chise.sh: drop the package cache and lists (about 190 MB); run apt update before installing.
     chroot "$STAGE" apt-get clean
     rm -rf "$STAGE"/var/lib/apt/lists/*
