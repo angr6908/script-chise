@@ -182,7 +182,12 @@ rm "$ARCHIVE"
 echo localhost > "$STAGE/etc/hostname"
 printf '127.0.0.1\tlocalhost\n::1\t\tlocalhost ip6-localhost ip6-loopback\n' > "$STAGE/etc/hosts"
 rm -f "$STAGE/etc/resolv.conf"
-printf 'nameserver %s\nnameserver %s\n' "$DNS4" "$DNS6" > "$STAGE/etc/resolv.conf"
+# IPv6 resolver first when the container has an IPv6 default route.
+if awk '$1 == "00000000000000000000000000000000" && $2 == "00" && $10 != "lo" { found=1 } END { exit !found }' /proc/net/ipv6_route 2>/dev/null; then
+    printf 'nameserver %s\nnameserver %s\n' "$DNS6" "$DNS4"
+else
+    printf 'nameserver %s\nnameserver %s\n' "$DNS4" "$DNS6"
+fi > "$STAGE/etc/resolv.conf"
 
 if [ "$PROXMOX" = 1 ]; then
     # Keep the DNS, hostname and hosts set above instead of the ones Proxmox writes
