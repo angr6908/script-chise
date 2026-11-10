@@ -35,6 +35,55 @@ esac
 
 # Proxmox rewrites the network config and DNS from the CT config at every start.
 case "$(uname -r)" in *-pve) PROXMOX=1 ;; *) PROXMOX=0 ;; esac
+OLD_ID=
+[ ! -r /etc/os-release ] || OLD_ID=$(. /etc/os-release; printf '%s' "${ID:-}")
+
+# Prints field $2 (via or dev) of the IPv$1 default route. With $3 set, routes learned
+# from DHCP or router adverts are skipped, since the new system learns those itself.
+default_route() {
+    ip -"$1" route show 2>/dev/null | awk -v want="$2" -v static_only="${3:-}" '
+        $1 == "default" && !(static_only && (/ proto (dhcp|ra)( |$)/ || / expires /)) {
+            for (i = 2; i < NF; i++) if ($i == want) { print $(i + 1); exit }
+        }'
+}
+
+# Permanent global addresses on interface $1; ones with a lifetime came from DHCP or SLAAC.
+static_addrs() {
+    ip -o addr show dev "$1" 2>/dev/null | awk '
+        ($3 == "inet" || $3 == "inet6") && / scope global / && !/ dynamic / && / valid_lft forever / { print $4 }'
+}
+
+# True if the current system sets its addresses itself rather than by DHCP.
+has_static_config() {
+    grep -qsE '^[[:space:]]*iface[[:space:]].*[[:space:]]static([[:space:]]|$)' \
+        /etc/network/interfaces /etc/network/interfaces.d/* ||
+    grep -qsE '^[[:space:]]*(Address|Gateway)[[:space:]]*=' /etc/systemd/network/*.network ||
+    grep -qsE '^[[:space:]]*method[[:space:]]*=[[:space:]]*manual' /etc/NetworkManager/system-connections/*
+}
+
+has_static_ipv4() {
+    for addr in $NET_ADDRS; do case "$addr" in *:*) ;; *) return 0 ;; esac; done
+    return 1
+}
+
+write_networkd_static() {
+    {
+        printf '[Match]\nName=%s\n\n[Network]\n' "$NET_IF"
+        has_static_ipv4 || echo 'DHCP=ipv4'
+        for addr in $NET_ADDRS; do printf 'Address=%s\n' "$addr"; done
+        for gw in $NET_GW4 $NET_GW6; do printf '\n[Route]\nGateway=%s\nGatewayOnLink=yes\n' "$gw"; done
+    } > "$1"
+}
+
+# ifupdown-ng syntax: one stanza, address family taken from each address.
+write_ifupdown_static() {
+    {
+        printf 'auto lo\niface lo inet loopback\n\nauto %s\niface %s\n' "$NET_IF" "$NET_IF"
+        has_static_ipv4 || echo '    use dhcp'
+        for addr in $NET_ADDRS; do printf '    address %s\n' "$addr"; done
+        for gw in $NET_GW4 $NET_GW6; do printf '    gateway %s\n' "$gw"; done
+    } > "$1"
+}
 
 STAGE=/chise-rootfs
 ARCHIVE=/chise-rootfs.tar.xz
@@ -55,6 +104,26 @@ if [ "$DNS_MODE" = 2 ]; then
 else
     DNS4=9.9.9.9
     DNS6=2620:fe::fe
+fi
+
+# Proxmox restores the CT's addresses itself; elsewhere offer to keep the current ones,
+# since the new image only knows DHCP.
+NET_STATIC=0 NET_IF=eth0 NET_ADDRS= NET_GW4= NET_GW6=
+if [ "$PROXMOX" = 0 ] && command -v ip >/dev/null 2>&1; then
+    NET_IF=$(default_route 4 dev)
+    [ -n "$NET_IF" ] || NET_IF=$(default_route 6 dev)
+    NET_IF=${NET_IF:-eth0}
+    NET_ADDRS=$(static_addrs "$NET_IF")
+    NET_GW4=$(default_route 4 via static)
+    NET_GW6=$(default_route 6 via static)
+    if [ -n "$NET_ADDRS" ]; then
+        if has_static_config; then NET_DEFAULT=2; else NET_DEFAULT=1; fi
+        echo "Addresses on $NET_IF:" $NET_ADDRS
+        [ -z "$NET_GW4$NET_GW6" ] || echo 'Gateways:' $NET_GW4 $NET_GW6
+        printf 'Network: 1) DHCP  2) Static, keep these addresses [%s]: ' "$NET_DEFAULT"
+        read -r NET_MODE < /dev/tty
+        if [ "${NET_MODE:-$NET_DEFAULT}" = 2 ]; then NET_STATIC=1; fi
+    fi
 fi
 
 printf 'This will ERASE the current container filesystem. Type ERASE to continue: '
@@ -135,8 +204,9 @@ chmod 600 "$STAGE/root/.ssh/authorized_keys"
 mount --bind /dev "$STAGE/dev"
 mount --bind /proc "$STAGE/proc"
 if [ "$DISTRO" = debian ]; then
-    # Proxmox writes the CT's addresses only as ifupdown config.
-    [ "$PROXMOX" = 1 ] && NET_PKG=ifupdown || NET_PKG=
+    # Proxmox writes the CT's addresses only as ifupdown config. ifupdown needs dhclient
+    # for DHCPv6; dhcpcd only covers IPv4.
+    [ "$PROXMOX" = 1 ] && NET_PKG='ifupdown isc-dhcp-client' || NET_PKG=
     chroot "$STAGE" /bin/sh -c "export DEBIAN_FRONTEND=noninteractive; apt-get update -q && apt-get install -y --no-install-recommends openssh-server ca-certificates iproute2 busybox-static nano $NET_PKG"
     if [ "$PROXMOX" = 1 ]; then
         # The image's DHCP-only eth0.network would ignore the CT's static IPs. Mask rather
@@ -145,8 +215,12 @@ if [ "$DISTRO" = debian ]; then
         chroot "$STAGE" systemctl mask systemd-networkd.service systemd-networkd.socket systemd-networkd-wait-online.service
         chroot "$STAGE" systemctl enable ssh networking
     else
-        if [ ! -f "$STAGE/etc/systemd/network/eth0.network" ]; then
-            mkdir -p "$STAGE/etc/systemd/network"
+        mkdir -p "$STAGE/etc/systemd/network"
+        if [ "$NET_STATIC" = 1 ]; then
+            # Replace the image's DHCP-only eth0.network.
+            rm -f "$STAGE/etc/systemd/network/eth0.network"
+            write_networkd_static "$STAGE/etc/systemd/network/20-chise.network"
+        elif [ ! -f "$STAGE/etc/systemd/network/eth0.network" ]; then
             printf '[Match]\nName=eth0\n\n[Network]\nDHCP=yes\nIPv6AcceptRA=yes\n' > "$STAGE/etc/systemd/network/20-chise.network"
         fi
         chroot "$STAGE" systemctl enable ssh systemd-networkd
@@ -156,7 +230,9 @@ if [ "$DISTRO" = debian ]; then
     STATIC_BUSYBOX="$STAGE/bin/busybox"
 else
     chroot "$STAGE" /bin/sh -c 'apk add --no-cache openssh ca-certificates iproute2 ifupdown-ng busybox-static nano && rc-update add sshd default && rc-update add networking default && rc-update add sysctl boot'
-    if [ ! -s "$STAGE/etc/network/interfaces" ]; then
+    if [ "$NET_STATIC" = 1 ]; then
+        write_ifupdown_static "$STAGE/etc/network/interfaces"
+    elif [ ! -s "$STAGE/etc/network/interfaces" ]; then
         printf 'auto eth0\niface eth0 inet dhcp\niface eth0 inet6 dhcp\n' > "$STAGE/etc/network/interfaces"
     fi
     printf 'RESOLV_CONF="no"\n' > "$STAGE/etc/udhcpc/udhcpc.conf"
@@ -203,6 +279,8 @@ BUSYBOX="$STAGE/busybox"
 "$BUSYBOX" sync
 "$BUSYBOX" rm -rf -- "$STAGE"
 if [ "$PROXMOX" = 1 ]; then
+    [ "$OLD_ID" = "$DISTRO" ] ||
+        echo "Proxmox still has this CT's old OS type; on the host run: pct set <id> --ostype $DISTRO"
     echo 'Done. Restart the container from the Proxmox host (pct reboot <id>) or your provider panel'
 else
     echo 'Done. Restart the container from the Incus host: incus restart <name>'
