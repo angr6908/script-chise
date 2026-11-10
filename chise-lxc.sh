@@ -20,7 +20,7 @@ if ! grep -aq 'container=lxc' /proc/1/environ &&
     exit 1
 fi
 
-for command in tar mount umount chroot awk cp hostname; do
+for command in tar mount umount chroot awk cp; do
     command -v "$command" >/dev/null 2>&1 || {
         echo "Missing prerequisite: $command" >&2; exit 1;
     }
@@ -175,13 +175,18 @@ tar -xJf "$ARCHIVE" -C "$STAGE"
 rm "$ARCHIVE"
 [ -x "$STAGE/bin/sh" ] || { echo 'Invalid rootfs image' >&2; exit 1; }
 
-printf '%s\n' "$(hostname)" > "$STAGE/etc/hostname"
+# Same hostname and hosts as chise.sh.
+echo localhost > "$STAGE/etc/hostname"
+printf '127.0.0.1\tlocalhost\n::1\t\tlocalhost ip6-localhost ip6-loopback\n' > "$STAGE/etc/hosts"
 rm -f "$STAGE/etc/resolv.conf"
 printf 'nameserver %s\nnameserver %s\n' "$DNS4" "$DNS6" > "$STAGE/etc/resolv.conf"
 
 if [ "$PROXMOX" = 1 ]; then
-    # Keep the DNS chosen above instead of the one Proxmox writes at every start.
+    # Keep the DNS, hostname and hosts set above instead of the ones Proxmox writes
+    # from the CT config at every start.
     : > "$STAGE/etc/.pve-ignore.resolv.conf"
+    : > "$STAGE/etc/.pve-ignore.hostname"
+    : > "$STAGE/etc/.pve-ignore.hosts"
     # Keep the CT's static addresses until Proxmox rewrites this file at the next start.
     if [ -s /etc/network/interfaces ]; then
         mkdir -p "$STAGE/etc/network"
@@ -245,7 +250,11 @@ if [ "$DISTRO" = debian ]; then
     chroot "$STAGE" systemctl disable systemd-resolved 2>/dev/null || true
     STATIC_BUSYBOX="$STAGE/bin/busybox"
 else
-    chroot "$STAGE" /bin/sh -c 'apk add --no-cache openssh ca-certificates iproute2 ifupdown-ng busybox-static nano && rc-update add sshd default && rc-update add networking default && rc-update add sysctl boot'
+    chroot "$STAGE" /bin/sh -c 'apk add --no-cache openssh ca-certificates iproute2 ifupdown-ng busybox-static nano && rc-update add sshd default && rc-update add networking default && rc-update add sysctl boot && rc-update add local default'
+    # OpenRC's hostname service skips LXC containers, so apply /etc/hostname from local.d.
+    mkdir -p "$STAGE/etc/local.d"
+    printf '#!/bin/sh\nread -r h < /etc/hostname && hostname "$h"\n' > "$STAGE/etc/local.d/hostname.start"
+    chmod 755 "$STAGE/etc/local.d/hostname.start"
     if [ "$NET_STATIC" = 1 ]; then
         write_ifupdown_static "$STAGE/etc/network/interfaces"
     elif [ ! -s "$STAGE/etc/network/interfaces" ]; then
