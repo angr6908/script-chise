@@ -87,8 +87,9 @@ write_ifupdown_static() {
 
 STAGE=/chise-rootfs
 ARCHIVE=/chise-rootfs.tar.xz
-[ ! -e "$STAGE" ] && [ ! -L "$STAGE" ] && [ ! -e "$ARCHIVE" ] || {
-    echo "Remove the existing $STAGE or $ARCHIVE before retrying" >&2; exit 1;
+OLDROOT=/chise-oldroot
+[ ! -e "$STAGE" ] && [ ! -L "$STAGE" ] && [ ! -e "$ARCHIVE" ] && [ ! -e "$OLDROOT" ] || {
+    echo "Remove the existing $STAGE, $ARCHIVE or $OLDROOT before retrying" >&2; exit 1;
 }
 
 if awk '$5 != "/" && $5 !~ /^\/(dev|proc|sys|run)(\/|$)/ { found=1; print "Extra mount:", $5 > "/dev/stderr" } END { exit !found }' /proc/self/mountinfo; then
@@ -273,26 +274,36 @@ umount "$STAGE/proc"
 umount "$STAGE/dev"
 
 echo 'Image ready. Replacing the old root filesystem...'
-mkdir "$STAGE/oldroot"
-mount --bind / "$STAGE/oldroot"
-trap - EXIT HUP INT TERM
-chroot "$STAGE" /busybox sh -ec '
-    for entry in /oldroot/* /oldroot/.[!.]* /oldroot/..?*; do
-        [ -e "$entry" ] || [ -L "$entry" ] || continue
-        case "${entry##*/}" in dev|proc|sys|run|chise-rootfs) continue ;; esac
-        /busybox rm -rf -- "$entry"
-    done
-    for entry in /* /.[!.]* /..?*; do
-        [ -e "$entry" ] || [ -L "$entry" ] || continue
-        case "${entry##*/}" in dev|proc|sys|run|oldroot|busybox) continue ;; esac
-        /busybox mv -- "$entry" /oldroot/
-    done
-'
-
+# Swap by renaming inside the root mount. Across a bind mount of / rename fails with
+# EXDEV and mv copies instead, which needs the image's size in free space a second
+# time. The old system stays whole in $OLDROOT until the new one is in place.
 BUSYBOX="$STAGE/busybox"
-"$BUSYBOX" umount "$STAGE/oldroot"
+trap - EXIT HUP INT TERM
+"$BUSYBOX" sh -ec '
+    bb=$1 root=${2%/} stage=$3 old=$4
+    "$bb" mkdir "$old"
+    for entry in "$root"/* "$root"/.[!.]* "$root"/..?*; do
+        [ -e "$entry" ] || [ -L "$entry" ] || continue
+        case "$entry" in "$root"/dev|"$root"/proc|"$root"/sys|"$root"/run|"$stage"|"$old") continue ;; esac
+        "$bb" mv -- "$entry" "$old/"
+    done
+    for entry in "$stage"/* "$stage"/.[!.]* "$stage"/..?*; do
+        [ -e "$entry" ] || [ -L "$entry" ] || continue
+        case "${entry##*/}" in dev|proc|sys|run|busybox) continue ;; esac
+        "$bb" mv -- "$entry" "$root/"
+    done
+' sh "$BUSYBOX" / "$STAGE" "$OLDROOT" || {
+    echo "Swap failed. The old system is in $OLDROOT and the new one in $STAGE;" >&2
+    echo "move entries back with $BUSYBOX mv before restarting." >&2
+    exit 1
+}
+
 "$BUSYBOX" sync
-"$BUSYBOX" rm -rf -- "$STAGE"
+if "$BUSYBOX" awk -v a="$STAGE" -v b="$OLDROOT" '$5 == a || $5 == b || index($5, a "/") == 1 || index($5, b "/") == 1 { found = 1 } END { exit !found }' /proc/self/mountinfo; then
+    echo "A mount remains under $STAGE or $OLDROOT; unmount it, then remove both by hand" >&2
+else
+    "$BUSYBOX" rm -rf -- "$OLDROOT" "$STAGE"
+fi
 if [ "$PROXMOX" = 1 ]; then
     [ "$OLD_ID" = "$DISTRO" ] ||
         echo "Proxmox still has this CT's old OS type; on the host run: pct set <id> --ostype $DISTRO"
