@@ -235,6 +235,9 @@ if [ "$DISTRO" = debian ]; then
         rm -f "$STAGE/etc/systemd/network/eth0.network"
         chroot "$STAGE" systemctl mask systemd-networkd.service systemd-networkd.socket systemd-networkd-wait-online.service
         chroot "$STAGE" systemctl enable ssh networking
+        # Proxmox's unprivileged CTs refuse these mounts, which systemd then lists as
+        # failed; /tmp stays on disk, which also spares the CT's RAM.
+        chroot "$STAGE" systemctl mask dev-mqueue.mount run-lock.mount sys-kernel-config.mount sys-kernel-debug.mount tmp.mount
     else
         mkdir -p "$STAGE/etc/systemd/network"
         if [ "$NET_STATIC" = 1 ]; then
@@ -248,6 +251,9 @@ if [ "$DISTRO" = debian ]; then
     fi
     # resolv.conf is a static file now, so the image's systemd-resolved has nothing to do.
     chroot "$STAGE" systemctl disable systemd-resolved 2>/dev/null || true
+    # Like chise.sh: drop the package cache and lists (about 190 MB); run apt update before installing.
+    chroot "$STAGE" apt-get clean
+    rm -rf "$STAGE"/var/lib/apt/lists/*
     STATIC_BUSYBOX="$STAGE/bin/busybox"
 else
     chroot "$STAGE" /bin/sh -c 'apk add --no-cache openssh ca-certificates iproute2 ifupdown-ng busybox-static nano && rc-update add sshd default && rc-update add networking default && rc-update add sysctl boot && rc-update add local default'
