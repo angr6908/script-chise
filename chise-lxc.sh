@@ -282,14 +282,16 @@ trap - EXIT HUP INT TERM
 "$BUSYBOX" sh -ec '
     bb=$1 root=${2%/} stage=$3 old=$4
     "$bb" mkdir "$old"
+    # lost+found belongs to the host'"'"'s root in an unprivileged container, which may
+    # not move it; it stays where it is.
     for entry in "$root"/* "$root"/.[!.]* "$root"/..?*; do
         [ -e "$entry" ] || [ -L "$entry" ] || continue
-        case "$entry" in "$root"/dev|"$root"/proc|"$root"/sys|"$root"/run|"$stage"|"$old") continue ;; esac
+        case "$entry" in "$root"/dev|"$root"/proc|"$root"/sys|"$root"/run|"$root"/lost+found|"$stage"|"$old") continue ;; esac
         "$bb" mv -- "$entry" "$old/"
     done
     for entry in "$stage"/* "$stage"/.[!.]* "$stage"/..?*; do
         [ -e "$entry" ] || [ -L "$entry" ] || continue
-        case "${entry##*/}" in dev|proc|sys|run|busybox) continue ;; esac
+        case "${entry##*/}" in dev|proc|sys|run|lost+found|busybox) continue ;; esac
         "$bb" mv -- "$entry" "$root/"
     done
 ' sh "$BUSYBOX" / "$STAGE" "$OLDROOT" || {
